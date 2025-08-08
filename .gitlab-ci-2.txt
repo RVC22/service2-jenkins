@@ -1,0 +1,32 @@
+stages:
+  - deploy
+
+deploy_app_to_gcp_vm:
+  stage: deploy
+  image: ubuntu:latest
+  
+  before_script:
+    - apt-get update -y
+    - apt-get install -y openssh-client curl bash coreutils gnupg
+
+    # Instalar Google Cloud SDK
+    - curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+    - echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list
+    - apt-get update -y
+    - apt-get install -y google-cloud-sdk
+
+    # Autenticación con Google Cloud
+    - echo "$GCP_SERVICE_ACCOUNT_KEY_DEPLOYER" | base64 -d > /tmp/gcp-key-deployer.json
+    - gcloud auth activate-service-account --key-file=/tmp/gcp-key-deployer.json
+    - gcloud config set project hotel-393520
+    - rm /tmp/gcp-key-deployer.json
+
+    # Recuperar datos de Secret Manager
+    - export VM_PUBLIC_IP=$(gcloud secrets versions access latest --secret=gcp-vm-public-ip)
+    - gcloud secrets versions access latest --secret=gcp-vm-private-key > /tmp/gcp-private-key.pem
+    - export SSH_USER=$(gcloud secrets versions access latest --secret=gcp-vm-ssh-user)
+    - chmod 400 /tmp/gcp-private-key.pem
+
+  script:
+    - echo "DEBUG= Iniciando conexión SSH a ${SSH_USER}@${VM_PUBLIC_IP}"
+    - ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 -i /tmp/gcp-private-key.pem ${SSH_USER}@${VM_PUBLIC_IP} "export GITLAB_TOKEN_FROM_CI=\"${GITLAB_DEPLOY_TOKEN}\" APP_DIR=\"\$HOME/service2\"; bash -s" < deploy.sh

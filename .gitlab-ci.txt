@@ -1,0 +1,55 @@
+# .gitlab-ci.yml para PROYECTO B: Desplegar aplicación a la VM de GCP
+
+stages:
+  - deploy
+
+
+deploy_app_to_gcp_vm: # Nombre del job más descriptivo
+  stage: deploy
+  image: google/cloud-sdk:latest # Usamos la imagen oficial de Google Cloud SDK
+  
+  before_script:
+    # 1. Instalar herramientas necesarias (openssh-client para ssh, bash, coreutils)
+    - apt-get update -y
+    - apt-get install -y openssh-client curl bash coreutils
+
+    - echo "Valor de TEST_VAR= '$TEST_VAR'"
+    - echo "Longitud de TEST_VAR= ${#TEST_VAR}"
+
+    # --- DIAGNÓSTICO DE CLAVE DE CUENTA DE SERVICIO ---
+    # ADVERTENCIA: NUNCA IMPRIMAS LA CLAVE COMPLETA EN LOS LOGS PÚBLICOS
+    - echo "Longitud de la variable GCP_SERVICE_ACCOUNT_KEY_DEPLOYER= ${#GCP_SERVICE_ACCOUNT_KEY_DEPLOYER}"
+    - echo "valor de la variable GCP_SERVICE_ACCOUNT_KEY_DEPLOYER= ${GCP_SERVICE_ACCOUNT_KEY_DEPLOYER}"
+    - echo "Primeros 50 caracteres (base64) de la variable= ${GCP_SERVICE_ACCOUNT_KEY_DEPLOYER:0:50}"
+    # Intenta decodificar una pequeña parte para ver si el formato es base64
+    - echo "$GCP_SERVICE_ACCOUNT_KEY_DEPLOYER" | head -c 100 | base64 -d > /tmp/test_decode_key_snippet.json 2>/dev/null || true
+    - echo "Contenido decodificado del snippet (debe parecer JSON):"
+    - cat /tmp/test_decode_key_snippet.json || echo "ERROR= El snippet no se pudo decodificar correctamente (variable vacía o mal formato base64)"
+    - rm -f /tmp/test_decode_key_snippet.json # Limpiar archivo temporal
+
+    # 2. Autenticación con Google Cloud usando la clave de cuenta de servicio DEPLOYER
+    # Asegúrate de que $GCP_SERVICE_ACCOUNT_KEY_DEPLOYER esté base64-encoded y sea de tipo "Variable" en GitLab CI/CD.
+    - echo "$GCP_SERVICE_ACCOUNT_KEY_DEPLOYER" | base64 -d > /tmp/gcp-key-deployer.json
+    - ls -l /tmp/gcp-key-deployer.json # Verificar tamaño del archivo (debería ser > 0)
+    - head -c 100 /tmp/gcp-key-deployer.json # Mostrar los primeros 100 caracteres del archivo JSON decodificado
+    - gcloud auth activate-service-account --key-file=/tmp/gcp-key-deployer.json
+    - gcloud config set project hotel-393520 # ¡VERIFICA TU ID DE PROYECTO REAL!
+    - rm /tmp/gcp-key-deployer.json # Elimina el archivo de clave temporal por seguridad
+
+    # === RECUPERAR DATOS DE GOOGLE SECRET MANAGER ===
+    # 3. Recuperar la IP pública
+    - export VM_PUBLIC_IP=$(gcloud secrets versions access latest --secret=gcp-vm-public-ip)
+    # 4. Recuperar la clave privada y guardarla en un archivo temporal
+    - gcloud secrets versions access latest --secret=gcp-vm-private-key > /tmp/gcp-private-key.pem
+    # 5. Recuperar el usuario SSH
+    - export SSH_USER=$(gcloud secrets versions access latest --secret=gcp-vm-ssh-user)
+
+    # 6. Establecer permisos correctos para la clave privada (¡CRÍTICO para SSH!)
+    - chmod 400 /tmp/gcp-private-key.pem
+
+  script:
+    - echo "Conectando a VM con IP= ${VM_PUBLIC_IP} y usuario= ${SSH_USER}"
+    # 7. Construir y ejecutar el comando SSH de forma dinámica
+    - ssh -o StrictHostKeyChecking=no -i /tmp/gcp-private-key.pem ${SSH_USER}@${VM_PUBLIC_IP} 'bash -s' < deploy.sh
+
+    - echo "Comando de despliegue a la VM ejecutado exitosamente."
